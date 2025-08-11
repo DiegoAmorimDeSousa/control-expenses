@@ -1,31 +1,62 @@
-require('dotenv').config();
+require('dotenv').config(); 
 const TelegramBot = require('node-telegram-bot-api');
+const express = require('express'); 
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
+const API_URL = process.env.API_URL; 
+const WEBHOOK_URL = process.env.WEBHOOK_URL; 
+const PORT = process.env.PORT || 80;
 
 if (!token) {
     console.error('Erro: O token do bot do Telegram não foi encontrado. Certifique-se de que a variável de ambiente TELEGRAM_BOT_TOKEN está configurada.');
     process.exit(1);
 }
 
-const bot = new TelegramBot(token, { polling: true });
+if (!API_URL) {
+    console.error('Erro: A URL da API de gastos não foi configurada na variável de ambiente API_URL.');
+    process.exit(1);
+}
+
+if (!WEBHOOK_URL) {
+    console.error('Erro: A URL do Webhook do bot não foi configurada na variável de ambiente WEBHOOK_URL. Esta deve ser a URL pública do seu bot no Render.');
+    process.exit(1);
+}
+
+const bot = new TelegramBot(token);
+
+const app = express();
+app.use(express.json()); 
+
+bot.setWebhook(`${WEBHOOK_URL}/webhook`).then(() => {
+    console.log(`Webhook configurado para: ${WEBHOOK_URL}/webhook`);
+}).catch(err => {
+    console.error('Erro ao configurar o webhook:', err);
+});
+
+app.post('/webhook', (req, res) => {
+    bot.processUpdate(req.body);
+    res.sendStatus(200); 
+});
 
 const userExpenses = {};
 
-console.log('Bot do Telegram iniciado e aguardando comandos...');
+console.log('Bot do Telegram iniciado e aguardando comandos via webhook...');
 
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId, 'Olá! Eu sou seu bot de controle de gastos. Para registrar um novo gasto, digite /gasto.');
+    const user = msg.from.first_name || 'Usuário Desconhecido';
+    bot.sendMessage(chatId, `Olá ${user}! Eu sou seu bot de controle de gastos. Para registrar um novo gasto, digite /gasto.`);
 });
 
 bot.onText(/\/gasto/, (msg) => {
     const chatId = msg.chat.id;
+    const user = msg.from.first_name || 'Usuário Desconhecido';
     userExpenses[chatId] = {
         state: 'waiting_description',
         description: '',
         category: '',
-        value: 0
+        value: 0,
+        user: user
     };
     bot.sendMessage(chatId, 'Certo! Qual a **descrição** do gasto? (Ex: Almoço no restaurante)', { parse_mode: 'Markdown' });
 });
@@ -67,17 +98,17 @@ bot.on('message', async (msg) => {
                     description: userExpenses[chatId].description,
                     category: userExpenses[chatId].category,
                     value: userExpenses[chatId].value,
-                    date: new Date().toISOString()
+                    date: new Date().toISOString(),
+                    user: userExpenses[chatId].user
                 };
 
                 await bot.sendMessage(chatId, `Perfeito! Registrando o gasto:
 Descrição: *${expenseData.description}*
 Categoria: *${expenseData.category}*
-Valor: *R$ ${expenseData.value.toFixed(2)}*`, { parse_mode: 'Markdown' });
+Valor: *R$ ${expenseData.value.toFixed(2)}*
+Registrado por: *${expenseData.user}*`, { parse_mode: 'Markdown' });
 
                 try {
-                    const API_URL = process.env.API_URL || 'http://localhost:3000/expenses'; 
-
                     const response = await fetch(API_URL, {
                         method: 'POST',
                         headers: {
@@ -107,7 +138,11 @@ Valor: *R$ ${expenseData.value.toFixed(2)}*`, { parse_mode: 'Markdown' });
     }
 });
 
-bot.on('polling_error', (error) => {
-    console.error('Erro de polling do Telegram:', error);
+app.listen(PORT, () => {
+    console.log(`Servidor do bot escutando na porta ${PORT}`);
+    console.log(`Aguardando webhooks em ${WEBHOOK_URL}/webhook`);
 });
 
+bot.on('polling_error', (error) => { 
+    console.error('Erro geral do bot (não relacionado a webhook, se polling estiver desabilitado):', error);
+});
